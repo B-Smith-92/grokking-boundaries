@@ -17,16 +17,17 @@ def probe_checkpoint(model, checkpoint_path, inputs, device):
     model.eval()
 
     p = model.p
-    labels = ((inputs[:, 0] + inputs[:, 1]) % p)
+    inputs_dev = inputs.to(device)
+    labels = ((inputs_dev[:, 0] + inputs_dev[:, 1]) % p)
 
     with torch.no_grad():
-        _, features = model(inputs.to(device), return_features=True)
+        _, features = model(inputs_dev, return_features=True)
 
     # per-class mean features
     class_means = torch.zeros(p, features.shape[1], device=device)
     for k in range(p):
         mask = labels == k
-        class_means[k] = features[mask.to(device)].mean(dim=0)
+        class_means[k] = features[mask].mean(dim=0)
 
     # normalise and compute cosine similarity
     norms = class_means.norm(dim=1, keepdim=True).clamp(min=1e-8)
@@ -44,7 +45,12 @@ def main(args):
         result = json.load(f)
 
     ra = result["args"]
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
     model = GrokTransformer(
         p=ra["prime"],
