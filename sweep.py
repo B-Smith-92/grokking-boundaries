@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 def run_train(base_args, overrides, output_dir):
@@ -23,6 +24,19 @@ def run_train(base_args, overrides, output_dir):
 
     with open(os.path.join(output_dir, "metrics.json")) as f:
         return json.load(f)
+
+
+def _run_train_job(args):
+    """Wrapper for parallel execution. Returns (key, data)."""
+    base_args, overrides, output_dir, job_key = args
+    existing = os.path.join(output_dir, "metrics.json")
+    if os.path.exists(existing):
+        with open(existing) as f:
+            data = json.load(f)
+        print(f"  Skipping {output_dir} (already complete)")
+        return job_key, data
+    data = run_train(base_args, overrides, output_dir)
+    return job_key, data
 
 
 def sweep_weight_decay(base_args, root):
@@ -59,35 +73,52 @@ def sweep_prime(base_args, root):
     return rows
 
 
-def sweep_optimal_ratio(base_args, root):
+def sweep_optimal_ratio(base_args, root, n_workers=1, dims=None):
     prime = base_args["prime"]
-    dims = [
-        int(prime * 0.75),
-        prime - 1,
-        int(prime * 1.25),
-        int(prime * 1.5),
-        prime * 2,
-        int(prime * 2.5),
-        prime * 3,
-        prime * 4,
-    ]
-    # round each to nearest multiple of 4 for n_heads=4
-    dims = [max(4, (d // 4) * 4) for d in dims]
+    if dims is None:
+        dims = [
+            int(prime * 0.75),
+            prime - 1,
+            int(prime * 1.25),
+            int(prime * 1.5),
+            prime * 2,
+            int(prime * 2.5),
+            prime * 3,
+            prime * 4,
+        ]
+        # round each to nearest multiple of 4 for n_heads=4
+        dims = [max(4, (d // 4) * 4) for d in dims]
     seeds = [42, 123, 456, 789, 1337]
-    rows = []
+
+    # Build all jobs
+    jobs = []
     for d in dims:
-        grok_epochs = []
         for seed in seeds:
             out = os.path.join(root, f"dim_{d}_seed_{seed}")
-            existing = os.path.join(out, "metrics.json")
-            if os.path.exists(existing):
-                with open(existing) as f:
-                    data = json.load(f)
-                print(f"  Skipping {out} (already complete)")
-            else:
-                data = run_train(base_args, {"d_model": d, "n_heads": 4, "seed": seed}, out)
-            if data and data["grok_epoch"] is not None:
-                grok_epochs.append(data["grok_epoch"])
+            jobs.append((base_args, {"d_model": d, "n_heads": 4, "seed": seed}, out, (d, seed)))
+
+    # Run jobs
+    results_map = {}
+    if n_workers > 1:
+        print(f"  Running {len(jobs)} jobs with {n_workers} parallel workers")
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_run_train_job, job): job for job in jobs}
+            for future in as_completed(futures):
+                key, data = future.result()
+                if data and data.get("grok_epoch") is not None:
+                    results_map[key] = data["grok_epoch"]
+                d, seed = key
+                print(f"  Done: dim={d} seed={seed} grok={data.get('grok_epoch') if data else 'FAIL'}")
+    else:
+        for job in jobs:
+            key, data = _run_train_job(job)
+            if data and data.get("grok_epoch") is not None:
+                results_map[key] = data["grok_epoch"]
+
+    # Aggregate by dim
+    rows = []
+    for d in dims:
+        grok_epochs = [results_map[(d, s)] for s in seeds if (d, s) in results_map]
         if grok_epochs:
             rows.append({
                 "d_model": d,
@@ -157,7 +188,18 @@ def main(args):
         print("Experiment 5: Optimal dim/prime ratio sweep")
         wd_tag = f"wd{args.weight_decay}".replace(".", "p")
         all_results["optimal_ratio"] = sweep_optimal_ratio(
-            base_args, os.path.join(args.output_dir, f"exp5_optimal_ratio_{wd_tag}"))
+            base_args, os.path.join(args.output_dir, f"exp5_optimal_ratio_{wd_tag}"),
+            n_workers=args.workers)
+
+    if args.experiment == "extended_ratio":
+        print("Experiment 5 (extended): 8x and 16x ratio sweep")
+        prime = base_args["prime"]
+        ext_dims = [prime * 8, prime * 16]  # 776, 1552 for prime=97
+        ext_dims = [(d // 4) * 4 for d in ext_dims]
+        wd_tag = f"wd{args.weight_decay}".replace(".", "p")
+        all_results["extended_ratio"] = sweep_optimal_ratio(
+            base_args, os.path.join(args.output_dir, f"exp5_optimal_ratio_{wd_tag}"),
+            n_workers=args.workers, dims=ext_dims)
 
     if args.experiment in ("all", "matched"):
         print("Experiment 4: Matched capacity sweep")
@@ -181,10 +223,11 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--experiment", type=str, default="all",
-                        choices=["all", "weight_decay", "hidden_dim", "prime", "matched", "optimal_ratio"])
+                        choices=["all", "weight_decay", "hidden_dim", "prime", "matched", "optimal_ratio", "extended_ratio"])
     parser.add_argument("--epochs", type=int, default=50000)
     parser.add_argument("--weight_decay", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir", type=str, default="sweep_results")
+    parser.add_argument("--workers", type=int, default=1, help="Parallel workers for optimal_ratio sweep")
     args = parser.parse_args()
     main(args)
