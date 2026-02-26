@@ -1,9 +1,11 @@
 """Single training job for modular arithmetic grokking."""
 
 import argparse
+import glob as globmod
 import json
 import os
 import random
+import re
 
 import numpy as np
 import torch
@@ -54,6 +56,24 @@ def detect_grokking(metrics, threshold, window=10):
     return None
 
 
+def find_latest_checkpoint(output_dir):
+    """Find the latest checkpoint in output_dir. Returns (path, epoch) or (None, 0)."""
+    files = globmod.glob(os.path.join(output_dir, "checkpoint_*.pt"))
+    if not files:
+        return None, 0
+    best_path, best_epoch = None, -1
+    for f in files:
+        m = re.search(r"checkpoint_(\d+)\.pt$", f)
+        if m:
+            ep = int(m.group(1))
+            if ep > best_epoch:
+                best_epoch = ep
+                best_path = f
+    if best_path is None:
+        return None, 0
+    return best_path, best_epoch
+
+
 def train(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -92,9 +112,29 @@ def train(args):
     loss_fn = nn.CrossEntropyLoss()
 
     metrics = []
+    start_epoch = 0
     checkpoint_interval = max(1, args.epochs // args.n_checkpoints)
 
-    for epoch in range(args.epochs):
+    # --- resume from checkpoint ---
+    if args.resume:
+        ckpt_path, ckpt_epoch = find_latest_checkpoint(args.output_dir)
+        if ckpt_path is not None:
+            ckpt = torch.load(ckpt_path, map_location=device)
+            if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+                model.load_state_dict(ckpt["model_state_dict"])
+                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                start_epoch = ckpt["epoch"] + 1
+                metrics = ckpt.get("metrics", [])
+                print(f"Resumed from {ckpt_path} (epoch {start_epoch}, optimizer restored)")
+            else:
+                # Old format: bare state_dict, no optimizer state
+                model.load_state_dict(ckpt)
+                start_epoch = ckpt_epoch + 1
+                print(f"Resumed from {ckpt_path} (epoch {start_epoch}, optimizer reset)")
+        else:
+            print("No checkpoint found, starting from scratch")
+
+    for epoch in range(start_epoch, args.epochs):
 
         # --- train step (full batch) ---
         model.train()
@@ -127,7 +167,12 @@ def train(args):
         # --- checkpoint ---
         if epoch % checkpoint_interval == 0 or epoch == args.epochs - 1:
             path = os.path.join(args.output_dir, f"checkpoint_{epoch:06d}.pt")
-            torch.save(model.state_dict(), path)
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "metrics": metrics,
+            }, path)
 
     grok_epoch = detect_grokking(metrics, args.grok_threshold)
 
@@ -158,5 +203,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_checkpoints", type=int, default=50)
     parser.add_argument("--grok_threshold", type=float, default=0.95)
     parser.add_argument("--output_dir", type=str, default="runs/default")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from latest checkpoint in output_dir")
     args = parser.parse_args()
     train(args)

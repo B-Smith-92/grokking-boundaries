@@ -192,11 +192,18 @@ def main(args):
             n_workers=args.workers)
 
     if args.experiment == "extended_ratio":
-        print("Experiment 5 (extended): 8x and 16x ratio sweep")
         prime = base_args["prime"]
         ext_dims = [prime * 8, prime * 16]  # 776, 1552 for prime=97
         ext_dims = [(d // 4) * 4 for d in ext_dims]
-        wd_tag = f"wd{args.weight_decay}".replace(".", "p")
+
+        # Epochs per WD must match the existing experiments
+        wd_epochs = {1.0: 20000, 0.1: 100000, 0.01: 200000}
+        wd = base_args["weight_decay"]
+        if wd in wd_epochs:
+            base_args["epochs"] = wd_epochs[wd]
+        wd_tag = f"wd{wd}".replace(".", "p")
+
+        print(f"Experiment 5 (extended): 8x and 16x ratio sweep at WD={wd}, {base_args['epochs']} epochs")
         all_results["extended_ratio"] = sweep_optimal_ratio(
             base_args, os.path.join(args.output_dir, f"exp5_optimal_ratio_{wd_tag}"),
             n_workers=args.workers, dims=ext_dims)
