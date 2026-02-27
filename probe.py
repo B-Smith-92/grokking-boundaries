@@ -12,8 +12,11 @@ from model import GrokTransformer
 
 def probe_checkpoint(model, checkpoint_path, inputs, device):
     """Load a checkpoint and return the K x K class-mean cosine similarity."""
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device,
-                                     weights_only=True))
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+        model.load_state_dict(ckpt["model_state_dict"])
+    else:
+        model.load_state_dict(ckpt)
     model.eval()
 
     p = model.p

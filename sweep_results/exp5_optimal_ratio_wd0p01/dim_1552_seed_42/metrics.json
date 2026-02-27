@@ -12,7 +12,7 @@
     "eval_interval": 10,
     "n_checkpoints": 50,
     "grok_threshold": 0.95,
-    "output_dir": "sweep_results\\exp5_optimal_ratio_wd0p01\\dim_1552_seed_42",
+    "output_dir": "sweep_results/exp5_optimal_ratio_wd0p01/dim_1552_seed_42",
     "resume": false
   },
   "metrics": [
