@@ -153,7 +153,7 @@ def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
     base_args = {
-        "prime": 97,
+        "prime": args.prime,
         "d_model": 128,
         "n_heads": 4,
         "n_layers": 2,
@@ -185,10 +185,12 @@ def main(args):
             base_args, os.path.join(args.output_dir, "exp3_prime"))
 
     if args.experiment in ("all", "optimal_ratio"):
-        print("Experiment 5: Optimal dim/prime ratio sweep")
+        print(f"Experiment 5: Optimal dim/prime ratio sweep (p={args.prime})")
         wd_tag = f"wd{args.weight_decay}".replace(".", "p")
+        prime_tag = f"p{args.prime}" if args.prime != 97 else ""
+        dir_suffix = f"exp5_optimal_ratio_{wd_tag}" + (f"_{prime_tag}" if prime_tag else "")
         all_results["optimal_ratio"] = sweep_optimal_ratio(
-            base_args, os.path.join(args.output_dir, f"exp5_optimal_ratio_{wd_tag}"),
+            base_args, os.path.join(args.output_dir, dir_suffix),
             n_workers=args.workers)
 
     if args.experiment == "extended_ratio":
@@ -235,6 +237,7 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir", type=str, default="sweep_results")
+    parser.add_argument("--prime", type=int, default=97, help="Prime modulus for the task")
     parser.add_argument("--workers", type=int, default=1, help="Parallel workers for optimal_ratio sweep")
     args = parser.parse_args()
     main(args)
