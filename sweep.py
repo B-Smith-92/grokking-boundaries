@@ -39,37 +39,97 @@ def _run_train_job(args):
     return job_key, data
 
 
-def sweep_weight_decay(base_args, root):
+def sweep_weight_decay(base_args, root, n_workers=1):
     values = [0.1, 0.5, 1.0, 3.0, 10.0]
+    seeds = [42, 123, 456, 789, 1337]
+    jobs = []
+    for wd in values:
+        for seed in seeds:
+            out = os.path.join(root, f"wd_{wd}_seed_{seed}")
+            jobs.append((base_args, {"weight_decay": wd, "seed": seed}, out, (wd, seed)))
+
+    results_map = {}
+    if n_workers > 1:
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_run_train_job, job): job for job in jobs}
+            for future in as_completed(futures):
+                key, data = future.result()
+                if data and data.get("grok_epoch") is not None:
+                    results_map[key] = data["grok_epoch"]
+    else:
+        for job in jobs:
+            key, data = _run_train_job(job)
+            if data and data.get("grok_epoch") is not None:
+                results_map[key] = data["grok_epoch"]
+
     rows = []
     for wd in values:
-        out = os.path.join(root, f"wd_{wd}")
-        data = run_train(base_args, {"weight_decay": wd}, out)
-        if data:
-            rows.append({"weight_decay": wd, "grok_epoch": data["grok_epoch"]})
+        grok_epochs = [results_map[(wd, s)] for s in seeds if (wd, s) in results_map]
+        if grok_epochs:
+            rows.append({"weight_decay": wd, "grok_epoch": round(sum(grok_epochs) / len(grok_epochs))})
     return rows
 
 
-def sweep_hidden_dim(base_args, root):
+def sweep_hidden_dim(base_args, root, n_workers=1):
     values = [32, 64, 128, 256]
-    rows = []
+    seeds = [42, 123, 456, 789, 1337]
+    jobs = []
     for d in values:
         n_heads = min(4, d)
-        out = os.path.join(root, f"dim_{d}")
-        data = run_train(base_args, {"d_model": d, "n_heads": n_heads}, out)
-        if data:
-            rows.append({"d_model": d, "grok_epoch": data["grok_epoch"]})
+        for seed in seeds:
+            out = os.path.join(root, f"dim_{d}_seed_{seed}")
+            jobs.append((base_args, {"d_model": d, "n_heads": n_heads, "seed": seed}, out, (d, seed)))
+
+    results_map = {}
+    if n_workers > 1:
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_run_train_job, job): job for job in jobs}
+            for future in as_completed(futures):
+                key, data = future.result()
+                if data and data.get("grok_epoch") is not None:
+                    results_map[key] = data["grok_epoch"]
+    else:
+        for job in jobs:
+            key, data = _run_train_job(job)
+            if data and data.get("grok_epoch") is not None:
+                results_map[key] = data["grok_epoch"]
+
+    rows = []
+    for d in values:
+        grok_epochs = [results_map[(d, s)] for s in seeds if (d, s) in results_map]
+        if grok_epochs:
+            rows.append({"d_model": d, "grok_epoch": round(sum(grok_epochs) / len(grok_epochs))})
     return rows
 
 
-def sweep_prime(base_args, root):
+def sweep_prime(base_args, root, n_workers=1):
     values = [23, 47, 59, 97]
+    seeds = [42, 123, 456, 789, 1337]
+    jobs = []
+    for p in values:
+        for seed in seeds:
+            out = os.path.join(root, f"prime_{p}_seed_{seed}")
+            jobs.append((base_args, {"prime": p, "seed": seed}, out, (p, seed)))
+
+    results_map = {}
+    if n_workers > 1:
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_run_train_job, job): job for job in jobs}
+            for future in as_completed(futures):
+                key, data = future.result()
+                if data and data.get("grok_epoch") is not None:
+                    results_map[key] = data["grok_epoch"]
+    else:
+        for job in jobs:
+            key, data = _run_train_job(job)
+            if data and data.get("grok_epoch") is not None:
+                results_map[key] = data["grok_epoch"]
+
     rows = []
     for p in values:
-        out = os.path.join(root, f"prime_{p}")
-        data = run_train(base_args, {"prime": p}, out)
-        if data:
-            rows.append({"prime": p, "grok_epoch": data["grok_epoch"]})
+        grok_epochs = [results_map[(p, s)] for s in seeds if (p, s) in results_map]
+        if grok_epochs:
+            rows.append({"prime": p, "grok_epoch": round(sum(grok_epochs) / len(grok_epochs))})
     return rows
 
 
@@ -132,20 +192,42 @@ def sweep_optimal_ratio(base_args, root, n_workers=1, dims=None):
     return rows
 
 
-def sweep_matched(base_args, root):
+def sweep_matched(base_args, root, n_workers=1):
     configs = [
         {"prime": 23, "d_model": 32,  "n_heads": 4},
         {"prime": 47, "d_model": 64,  "n_heads": 4},
         {"prime": 59, "d_model": 64,  "n_heads": 4},
         {"prime": 97, "d_model": 128, "n_heads": 4},
     ]
+    seeds = [42, 123, 456, 789, 1337]
+    jobs = []
+    for cfg in configs:
+        for seed in seeds:
+            out = os.path.join(root, f"prime_{cfg['prime']}_dim_{cfg['d_model']}_seed_{seed}")
+            jobs.append((base_args, {**cfg, "seed": seed}, out,
+                        (cfg["prime"], cfg["d_model"], seed)))
+
+    results_map = {}
+    if n_workers > 1:
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_run_train_job, job): job for job in jobs}
+            for future in as_completed(futures):
+                key, data = future.result()
+                if data and data.get("grok_epoch") is not None:
+                    results_map[key] = data["grok_epoch"]
+    else:
+        for job in jobs:
+            key, data = _run_train_job(job)
+            if data and data.get("grok_epoch") is not None:
+                results_map[key] = data["grok_epoch"]
+
     rows = []
     for cfg in configs:
-        out = os.path.join(root, f"prime_{cfg['prime']}_dim_{cfg['d_model']}")
-        data = run_train(base_args, cfg, out)
-        if data:
+        grok_epochs = [results_map[(cfg["prime"], cfg["d_model"], s)]
+                       for s in seeds if (cfg["prime"], cfg["d_model"], s) in results_map]
+        if grok_epochs:
             rows.append({"prime": cfg["prime"], "d_model": cfg["d_model"],
-                         "grok_epoch": data["grok_epoch"]})
+                         "grok_epoch": round(sum(grok_epochs) / len(grok_epochs))})
     return rows
 
 
@@ -172,17 +254,20 @@ def main(args):
     if args.experiment in ("all", "weight_decay"):
         print("Experiment 1: Weight decay sweep")
         all_results["weight_decay"] = sweep_weight_decay(
-            base_args, os.path.join(args.output_dir, "exp1_weight_decay"))
+            base_args, os.path.join(args.output_dir, "exp1_weight_decay"),
+            n_workers=args.workers)
 
     if args.experiment in ("all", "hidden_dim"):
         print("Experiment 2: Hidden dimension sweep")
         all_results["hidden_dim"] = sweep_hidden_dim(
-            base_args, os.path.join(args.output_dir, "exp2_hidden_dim"))
+            base_args, os.path.join(args.output_dir, "exp2_hidden_dim"),
+            n_workers=args.workers)
 
     if args.experiment in ("all", "prime"):
         print("Experiment 3: Prime sweep")
         all_results["prime"] = sweep_prime(
-            base_args, os.path.join(args.output_dir, "exp3_prime"))
+            base_args, os.path.join(args.output_dir, "exp3_prime"),
+            n_workers=args.workers)
 
     if args.experiment in ("all", "optimal_ratio"):
         print(f"Experiment 5: Optimal dim/prime ratio sweep (p={args.prime})")
@@ -213,7 +298,8 @@ def main(args):
     if args.experiment in ("all", "matched"):
         print("Experiment 4: Matched capacity sweep")
         all_results["matched"] = sweep_matched(
-            base_args, os.path.join(args.output_dir, "exp4_matched"))
+            base_args, os.path.join(args.output_dir, "exp4_matched"),
+            n_workers=args.workers)
 
     csv_path = os.path.join(args.output_dir, "summary.csv")
     with open(csv_path, "w", newline="") as f:

@@ -27,7 +27,7 @@ EXPERIMENT_DEFS = {
         "d_model": 128,
         "weight_decay": None,  # swept
         "epochs": 50000,
-        "seeds": [42],
+        "seeds": [42, 123, 456, 789, 1337],
     },
     "exp2_hidden_dim": {
         "description": "Hidden dimension sweep (p=97)",
@@ -36,7 +36,7 @@ EXPERIMENT_DEFS = {
         "d_model": None,  # swept
         "weight_decay": 1.0,
         "epochs": 50000,
-        "seeds": [42],
+        "seeds": [42, 123, 456, 789, 1337],
     },
     "exp3_prime": {
         "description": "Prime sweep (d=128)",
@@ -45,7 +45,7 @@ EXPERIMENT_DEFS = {
         "d_model": 128,
         "weight_decay": 1.0,
         "epochs": 50000,
-        "seeds": [42],
+        "seeds": [42, 123, 456, 789, 1337],
     },
     "exp4_matched": {
         "description": "Matched capacity across primes",
@@ -54,7 +54,7 @@ EXPERIMENT_DEFS = {
         "d_model": None,  # swept
         "weight_decay": 1.0,
         "epochs": 20000,
-        "seeds": [42],
+        "seeds": [42, 123, 456, 789, 1337],
     },
     "exp5_ratio_wd1": {
         "description": "Ratio sweep at WD=1.0 (p=97)",
@@ -84,13 +84,49 @@ EXPERIMENT_DEFS = {
         "seeds": [42, 123, 456, 789, 1337],
     },
     "prime53_ratio": {
-        "description": "Ratio sweep for p=53",
+        "description": "Ratio sweep for p=53 (single seed)",
         "sweep_params": "d_model",
         "prime": 53,
         "d_model": None,  # swept
         "weight_decay": 1.0,
         "epochs": 20000,
         "seeds": [42],
+    },
+    "exp5_ratio_wd1_p23": {
+        "description": "Ratio sweep at WD=1.0 (p=23)",
+        "sweep_params": "d_model",
+        "prime": 23,
+        "d_model": None,  # swept
+        "weight_decay": 1.0,
+        "epochs": 20000,
+        "seeds": [42, 123, 456, 789, 1337],
+    },
+    "exp5_ratio_wd1_p47": {
+        "description": "Ratio sweep at WD=1.0 (p=47)",
+        "sweep_params": "d_model",
+        "prime": 47,
+        "d_model": None,  # swept
+        "weight_decay": 1.0,
+        "epochs": 20000,
+        "seeds": [42, 123, 456, 789, 1337],
+    },
+    "exp5_ratio_wd1_p53": {
+        "description": "Ratio sweep at WD=1.0 (p=53)",
+        "sweep_params": "d_model",
+        "prime": 53,
+        "d_model": None,  # swept
+        "weight_decay": 1.0,
+        "epochs": 20000,
+        "seeds": [42, 123, 456, 789, 1337],
+    },
+    "exp5_ratio_wd1_p59": {
+        "description": "Ratio sweep at WD=1.0 (p=59)",
+        "sweep_params": "d_model",
+        "prime": 59,
+        "d_model": None,  # swept
+        "weight_decay": 1.0,
+        "epochs": 20000,
+        "seeds": [42, 123, 456, 789, 1337],
     },
 }
 
@@ -108,7 +144,15 @@ def classify_experiment(output_dir):
     # Normalize to forward slashes
     odir = output_dir.replace("\\", "/")
 
-    # Order matters: check wd0p01/wd0p1 before the bare exp5_optimal_ratio
+    # Order matters: check specific variants before general patterns
+    if odir.startswith("sweep_results/exp5_optimal_ratio_wd1p0_p23"):
+        return "exp5_ratio_wd1_p23"
+    if odir.startswith("sweep_results/exp5_optimal_ratio_wd1p0_p47"):
+        return "exp5_ratio_wd1_p47"
+    if odir.startswith("sweep_results/exp5_optimal_ratio_wd1p0_p53"):
+        return "exp5_ratio_wd1_p53"
+    if odir.startswith("sweep_results/exp5_optimal_ratio_wd1p0_p59"):
+        return "exp5_ratio_wd1_p59"
     if odir.startswith("sweep_results/exp5_optimal_ratio_wd0p01"):
         return "exp5_ratio_wd0p01"
     if odir.startswith("sweep_results/exp5_optimal_ratio_wd0p1"):
@@ -138,6 +182,7 @@ CREATE TABLE IF NOT EXISTS experiments (
     name        TEXT UNIQUE NOT NULL,
     description TEXT,
     sweep_params TEXT,
+    operation   TEXT NOT NULL DEFAULT 'add',
     prime       INTEGER,
     d_model     INTEGER,
     weight_decay REAL,
@@ -152,6 +197,7 @@ CREATE TABLE IF NOT EXISTS experiments (
 CREATE TABLE IF NOT EXISTS runs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     experiment_id   INTEGER NOT NULL REFERENCES experiments(id),
+    operation       TEXT NOT NULL DEFAULT 'add',
     prime           INTEGER NOT NULL,
     d_model         INTEGER NOT NULL,
     weight_decay    REAL    NOT NULL,
@@ -162,7 +208,8 @@ CREATE TABLE IF NOT EXISTS runs (
     final_train_acc  REAL,
     final_val_loss   REAL,
     final_val_acc    REAL,
-    source_file     TEXT UNIQUE NOT NULL
+    source_file     TEXT UNIQUE NOT NULL,
+    UNIQUE(operation, prime, d_model, weight_decay, seed)
 );
 
 CREATE TABLE IF NOT EXISTS metrics (
@@ -188,6 +235,7 @@ CREATE VIEW IF NOT EXISTS run_summary AS
 SELECT
     r.id            AS run_id,
     e.name          AS experiment,
+    r.operation,
     r.prime,
     r.d_model,
     r.weight_decay,
@@ -203,10 +251,11 @@ SELECT
 FROM runs r
 JOIN experiments e ON e.id = r.experiment_id;
 
--- View 2: ratio_sweep_stats — aggregates across seeds per (experiment, weight_decay, ratio)
+-- View 2: ratio_sweep_stats — aggregates across seeds per (experiment, operation, weight_decay, ratio)
 CREATE VIEW IF NOT EXISTS ratio_sweep_stats AS
 SELECT
     e.name          AS experiment,
+    r.operation,
     r.weight_decay,
     r.prime,
     r.d_model,
@@ -218,11 +267,12 @@ SELECT
     MAX(r.grok_epoch)               AS max_grok_epoch
 FROM runs r
 JOIN experiments e ON e.id = r.experiment_id
-GROUP BY e.name, r.weight_decay, r.prime, r.d_model;
+GROUP BY e.name, r.operation, r.weight_decay, r.prime, r.d_model;
 
--- View 3: phase_boundary — groups by (weight_decay, ratio): n_grokked vs n_failed
+-- View 3: phase_boundary — groups by (operation, weight_decay, ratio): n_grokked vs n_failed
 CREATE VIEW IF NOT EXISTS phase_boundary AS
 SELECT
+    r.operation,
     r.weight_decay,
     r.ratio,
     r.prime,
@@ -232,7 +282,7 @@ SELECT
     ROUND(100.0 * SUM(r.grok_epoch IS NOT NULL) / COUNT(*), 1) AS pct_grokked,
     AVG(r.grok_epoch)               AS mean_grok_epoch
 FROM runs r
-GROUP BY r.weight_decay, r.ratio, r.prime;
+GROUP BY r.operation, r.weight_decay, r.ratio, r.prime;
 
 -- View 4: experiment_overview — dashboard per experiment
 CREATE VIEW IF NOT EXISTS experiment_overview AS
@@ -268,13 +318,14 @@ def seed_experiments(conn):
     for name, defn in EXPERIMENT_DEFS.items():
         conn.execute("""
             INSERT OR IGNORE INTO experiments
-                (name, description, sweep_params, prime, d_model, weight_decay,
-                 n_heads, n_layers, lr, frac_train, epochs, seeds)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (name, description, sweep_params, operation, prime, d_model,
+                 weight_decay, n_heads, n_layers, lr, frac_train, epochs, seeds)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             name,
             defn["description"],
             defn["sweep_params"],
+            defn.get("operation", "add"),
             defn["prime"],
             defn["d_model"],
             defn["weight_decay"],
@@ -312,6 +363,17 @@ def load_metrics_file(filepath):
     return data, None
 
 
+def _is_legacy_seedless(source_file):
+    """Check if a source_file path is a legacy seedless directory (no _seed_ in path)."""
+    # Legacy seedless dirs are in exp1-4 and don't have _seed_ in their path
+    parts = source_file.replace("\\", "/")
+    for prefix in ("sweep_results/exp1_", "sweep_results/exp2_",
+                    "sweep_results/exp3_", "sweep_results/exp4_"):
+        if parts.startswith(prefix) and "_seed_" not in parts:
+            return True
+    return False
+
+
 def ingest(conn, base_path, update=False):
     """Ingest all metrics files. Returns (new_runs, updated_runs, skipped, errors)."""
     c = conn.cursor()
@@ -334,11 +396,17 @@ def ingest(conn, base_path, update=False):
     new_runs = 0
     updated_runs = 0
     skipped = 0
+    deduped = 0
     errors = []
 
     for filepath in files:
         # Normalize the source_file path for consistent dedup
         source_file = os.path.relpath(filepath, base_path)
+
+        # Skip legacy seedless directories (prefer _seed_* versions)
+        if _is_legacy_seedless(source_file):
+            skipped += 1
+            continue
 
         # Check if already ingested
         if source_file in existing:
@@ -387,30 +455,39 @@ def ingest(conn, base_path, update=False):
 
         prime = args["prime"]
         d_model = args["d_model"]
+        operation = args.get("operation", "add")
         ratio = round(d_model / prime, 4) if prime else 0.0
 
         final = metrics[-1] if metrics else {}
 
-        c.execute("""
-            INSERT INTO runs
-                (experiment_id, prime, d_model, weight_decay, seed, ratio,
-                 grok_epoch, final_train_loss, final_train_acc,
-                 final_val_loss, final_val_acc, source_file)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            exp_id,
-            prime,
-            d_model,
-            args["weight_decay"],
-            args["seed"],
-            ratio,
-            data.get("grok_epoch"),
-            final.get("train_loss"),
-            final.get("train_acc"),
-            final.get("val_loss"),
-            final.get("val_acc"),
-            source_file,
-        ))
+        try:
+            c.execute("""
+                INSERT INTO runs
+                    (experiment_id, operation, prime, d_model, weight_decay,
+                     seed, ratio, grok_epoch, final_train_loss, final_train_acc,
+                     final_val_loss, final_val_acc, source_file)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                exp_id,
+                operation,
+                prime,
+                d_model,
+                args["weight_decay"],
+                args["seed"],
+                ratio,
+                data.get("grok_epoch"),
+                final.get("train_loss"),
+                final.get("train_acc"),
+                final.get("val_loss"),
+                final.get("val_acc"),
+                source_file,
+            ))
+        except sqlite3.IntegrityError as e:
+            if "UNIQUE constraint failed" in str(e) and "source_file" not in str(e):
+                # Duplicate (operation, prime, d_model, weight_decay, seed) -- skip
+                deduped += 1
+                continue
+            raise
         run_id = c.lastrowid
 
         if source_file not in existing:
@@ -429,7 +506,7 @@ def ingest(conn, base_path, update=False):
         """, metric_rows)
 
     conn.commit()
-    return new_runs, updated_runs, skipped, errors
+    return new_runs, updated_runs, skipped, deduped, errors
 
 
 # ---------------------------------------------------------------------------
@@ -498,12 +575,14 @@ def main():
 
     # Ingest from all result directories
     print(f"\nScanning for metrics files...")
-    new, updated, skipped, errors = ingest(conn, base_path, update=args.update)
+    new, updated, skipped, deduped, errors = ingest(conn, base_path, update=args.update)
 
     print(f"  New runs:     {new}")
     if args.update:
         print(f"  Updated runs: {updated}")
     print(f"  Skipped:      {skipped}")
+    if deduped:
+        print(f"  Deduped:      {deduped}")
     if errors:
         print(f"  Errors:       {len(errors)}")
         for filepath, err in errors:

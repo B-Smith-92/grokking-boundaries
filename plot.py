@@ -40,20 +40,20 @@ def get_db(db_path):
     return conn
 
 
-def query_ratio_sweep(conn):
+def query_ratio_sweep(conn, operation='add'):
     """Get per-seed grok data for all exp5 ratio sweeps."""
     rows = conn.execute("""
         SELECT e.name, r.weight_decay, r.d_model, r.ratio, r.seed, r.grok_epoch,
                e.epochs AS max_epochs
         FROM runs r
         JOIN experiments e ON e.id = r.experiment_id
-        WHERE e.name LIKE 'exp5_ratio%'
+        WHERE e.name LIKE 'exp5_ratio%' AND r.operation = ?
         ORDER BY r.weight_decay DESC, r.ratio, r.seed
-    """).fetchall()
+    """, (operation,)).fetchall()
     return rows
 
 
-def query_ratio_stats(conn):
+def query_ratio_stats(conn, operation='add'):
     """Aggregated stats per (weight_decay, ratio)."""
     rows = conn.execute("""
         SELECT r.weight_decay, r.ratio, r.d_model,
@@ -64,23 +64,23 @@ def query_ratio_stats(conn):
                MAX(r.grok_epoch) AS max_grok
         FROM runs r
         JOIN experiments e ON e.id = r.experiment_id
-        WHERE e.name LIKE 'exp5_ratio%'
+        WHERE e.name LIKE 'exp5_ratio%' AND r.operation = ?
         GROUP BY r.weight_decay, r.ratio
         ORDER BY r.weight_decay DESC, r.ratio
-    """).fetchall()
+    """, (operation,)).fetchall()
     return rows
 
 
-def query_training_curves(conn, experiment, d_model, seed):
+def query_training_curves(conn, experiment, d_model, seed, operation='add'):
     """Get full training curve for a specific run."""
     rows = conn.execute("""
         SELECT m.epoch, m.train_loss, m.train_acc, m.val_loss, m.val_acc
         FROM metrics m
         JOIN runs r ON r.id = m.run_id
         JOIN experiments e ON e.id = r.experiment_id
-        WHERE e.name = ? AND r.d_model = ? AND r.seed = ?
+        WHERE e.name = ? AND r.d_model = ? AND r.seed = ? AND r.operation = ?
         ORDER BY m.epoch
-    """, (experiment, d_model, seed)).fetchall()
+    """, (experiment, d_model, seed, operation)).fetchall()
     return rows
 
 
@@ -325,8 +325,9 @@ def plot_reynolds_collapse(conn, output_dir):
     _style()
     stats = query_ratio_stats(conn)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
+    # Left panel: exp5 ratio sweeps (varying d_model at fixed prime=97)
     for wd in [1.0, 0.1, 0.01]:
         subset = [r for r in stats if r["weight_decay"] == wd and r["mean_grok"] is not None]
         if not subset:
@@ -336,18 +337,62 @@ def plot_reynolds_collapse(conn, output_dir):
         mins = [r["min_grok"] for r in subset]
         maxs = [r["max_grok"] for r in subset]
 
-        ax.plot(re_numbers, means, "o-", color=COLORS[wd], label=WD_LABELS[wd],
+        ax1.plot(re_numbers, means, "o-", color=COLORS[wd], label=f"Exp5 {WD_LABELS[wd]}",
                 markersize=6, linewidth=2)
-        ax.fill_between(re_numbers, mins, maxs, alpha=0.15, color=COLORS[wd])
+        ax1.fill_between(re_numbers, mins, maxs, alpha=0.15, color=COLORS[wd])
 
-    ax.set_xlabel("Re = d_model / (weight_decay × prime)", fontsize=13)
-    ax.set_ylabel("Grokking Epoch", fontsize=13)
-    ax.set_title("Reynolds Number Collapse Test", fontsize=14)
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.legend(fontsize=11)
-    ax.grid(True, alpha=0.2, which="both")
+    ax1.set_xlabel("Re = d_model / (weight_decay × prime)", fontsize=12)
+    ax1.set_ylabel("Grokking Epoch", fontsize=12)
+    ax1.set_title("Ratio Sweeps (varying d_model, p=97)", fontsize=13)
+    ax1.set_xscale("log")
+    ax1.set_yscale("log")
+    ax1.legend(fontsize=9)
+    ax1.grid(True, alpha=0.2, which="both")
 
+    # Right panel: all experiments on the same Re axis
+    exp_styles = {
+        "exp1_weight_decay": ("s", "#e41a1c", "Exp1: vary WD (d=128, p=97)"),
+        "exp2_hidden_dim":   ("D", "#377eb8", "Exp2: vary d (WD=1, p=97)"),
+        "exp3_prime":        ("^", "#4daf4a", "Exp3: vary p (d=128, WD=1)"),
+        "exp4_matched":      ("v", "#984ea3", "Exp4: matched (WD=1)"),
+    }
+    for exp_name, (marker, color, label) in exp_styles.items():
+        rows = conn.execute("""
+            SELECT r.d_model, r.weight_decay, r.prime,
+                   AVG(r.grok_epoch), MIN(r.grok_epoch), MAX(r.grok_epoch), COUNT(*)
+            FROM runs r JOIN experiments e ON e.id = r.experiment_id
+            WHERE e.name = ? AND r.grok_epoch IS NOT NULL AND r.operation = 'add'
+            GROUP BY r.d_model, r.weight_decay, r.prime
+            ORDER BY r.d_model
+        """, (exp_name,)).fetchall()
+        if not rows:
+            continue
+        re_nums = [r[0] / (r[1] * r[2]) for r in rows]
+        means = [r[3] for r in rows]
+        mins = [r[4] for r in rows]
+        maxs = [r[5] for r in rows]
+        ax2.plot(re_nums, means, marker=marker, color=color, label=label,
+                 markersize=8, linewidth=1.5, linestyle="-", alpha=0.85)
+        ax2.fill_between(re_nums, mins, maxs, alpha=0.1, color=color)
+
+    # Also overlay exp5 WD=1.0 for comparison
+    wd1_stats = [r for r in stats if r["weight_decay"] == 1.0 and r["mean_grok"] is not None]
+    if wd1_stats:
+        re_nums = [r["d_model"] / (1.0 * 97) for r in wd1_stats]
+        means = [r["mean_grok"] for r in wd1_stats]
+        ax2.plot(re_nums, means, "o-", color=COLORS[1.0], label="Exp5: ratio sweep (WD=1, p=97)",
+                 markersize=5, linewidth=1.5, alpha=0.5)
+
+    ax2.set_xlabel("Re = d_model / (weight_decay × prime)", fontsize=12)
+    ax2.set_ylabel("Grokking Epoch", fontsize=12)
+    ax2.set_title("All Experiments on Reynolds Axis", fontsize=13)
+    ax2.set_xscale("log")
+    ax2.set_yscale("log")
+    ax2.legend(fontsize=8, loc="upper right")
+    ax2.grid(True, alpha=0.2, which="both")
+
+    fig.suptitle("Reynolds Number Collapse Test: Re = d / (WD × p)", fontsize=14, y=1.02)
+    fig.tight_layout()
     path = os.path.join(output_dir, "fig_reynolds.png")
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -422,6 +467,80 @@ def plot_training_dynamics(conn, output_dir):
                  fontsize=14, y=1.02)
     fig.tight_layout()
     path = os.path.join(output_dir, "fig_dynamics.png")
+    fig.savefig(path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {path}")
+
+
+# ---------------------------------------------------------------------------
+# Figure 10: U-Shape Across Primes
+# ---------------------------------------------------------------------------
+
+def plot_u_shape_primes(conn, output_dir):
+    """Grok epoch vs ratio for all primes at WD=1.0."""
+    _style()
+
+    prime_colors = {23: "#e41a1c", 47: "#377eb8", 53: "#4daf4a", 59: "#984ea3", 97: "#ff7f00"}
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+
+    # Left: raw grok epoch
+    for prime in [23, 47, 53, 59, 97]:
+        rows = conn.execute("""
+            SELECT r.ratio, AVG(r.grok_epoch), MIN(r.grok_epoch), MAX(r.grok_epoch)
+            FROM runs r JOIN experiments e ON e.id = r.experiment_id
+            WHERE e.name LIKE 'exp5_ratio_wd1%' AND r.prime = ?
+                  AND r.grok_epoch IS NOT NULL AND r.operation = 'add'
+            GROUP BY r.ratio ORDER BY r.ratio
+        """, (prime,)).fetchall()
+        if not rows:
+            continue
+        ratios = [r[0] for r in rows]
+        means = [r[1] for r in rows]
+        mins = [r[2] for r in rows]
+        maxs = [r[3] for r in rows]
+        ax1.plot(ratios, means, "o-", color=prime_colors[prime], label=f"p={prime}",
+                 markersize=5, linewidth=1.8)
+        ax1.fill_between(ratios, mins, maxs, alpha=0.1, color=prime_colors[prime])
+
+    ax1.set_xlabel("Capacity Ratio (d_model / prime)", fontsize=12)
+    ax1.set_ylabel("Grokking Epoch", fontsize=12)
+    ax1.set_title("Grokking Speed by Prime (WD=1.0)", fontsize=13)
+    ax1.set_xscale("log")
+    ax1.set_yscale("log")
+    ax1.xaxis.set_major_formatter(ticker.ScalarFormatter())
+    ax1.legend(fontsize=10)
+    ax1.grid(True, alpha=0.2, which="both")
+
+    # Right: normalized by p^2 (dataset size proxy)
+    for prime in [23, 47, 53, 59, 97]:
+        rows = conn.execute("""
+            SELECT r.ratio, AVG(r.grok_epoch), MIN(r.grok_epoch), MAX(r.grok_epoch)
+            FROM runs r JOIN experiments e ON e.id = r.experiment_id
+            WHERE e.name LIKE 'exp5_ratio_wd1%' AND r.prime = ?
+                  AND r.grok_epoch IS NOT NULL AND r.operation = 'add'
+            GROUP BY r.ratio ORDER BY r.ratio
+        """, (prime,)).fetchall()
+        if not rows:
+            continue
+        ratios = [r[0] for r in rows]
+        # Normalize grok epoch by p^2 (number of input pairs)
+        norm = prime * prime
+        means = [r[1] / norm for r in rows]
+        ax2.plot(ratios, means, "o-", color=prime_colors[prime], label=f"p={prime}",
+                 markersize=5, linewidth=1.8)
+
+    ax2.set_xlabel("Capacity Ratio (d_model / prime)", fontsize=12)
+    ax2.set_ylabel("Grokking Epoch / p²", fontsize=12)
+    ax2.set_title("Normalized by Dataset Size (p²)", fontsize=13)
+    ax2.set_xscale("log")
+    ax2.xaxis.set_major_formatter(ticker.ScalarFormatter())
+    ax2.legend(fontsize=10)
+    ax2.grid(True, alpha=0.2, which="both")
+
+    fig.suptitle("U-Shape Across Task Complexities (WD=1.0)", fontsize=14, y=1.02)
+    fig.tight_layout()
+    path = os.path.join(output_dir, "fig_u_shape_primes.png")
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {path}")
@@ -737,6 +856,7 @@ def main(args):
         plot_grok_surface(conn, args.output_dir)
         plot_reynolds_collapse(conn, args.output_dir)
         plot_training_dynamics(conn, args.output_dir)
+        plot_u_shape_primes(conn, args.output_dir)
 
         conn.close()
 
